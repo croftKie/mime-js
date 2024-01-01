@@ -1,38 +1,58 @@
 #!/usr/bin/env node
 const HTML = require("html-parse-stringify");
-const { DIRS } = require("./constants/constants");
+const { DIRS, FILES } = require("./constants/constants");
 const { Readable } = require("stream");
 const fs = require("fs");
 const fse = require("fs-extra");
+const {readConfig, buildOutput, copyPublic} = require("./src/configManager");
 
 const mime = {
   render,
 };
 
-readConfig();
+initialiseBuildProcess();
 
-function readConfig() {
-  fs.readFile("./mime.config.json", "utf8", (err, data) => {
-    if (err) {
-      console.error(err);
-    } else {
-      const { outputDir } = JSON.parse(data);
-      if (outputDir) {
-        DIRS.output = outputDir;
-      }
-    }
-    mime.render(createNodeMap());
-  });
+async function initialiseBuildProcess() {
+  await readConfig();
+  await buildOutput();
+  await copyPublic();
+  runBuildProcess();
 }
 
-function createNodeMap() {
-  // call build folder function and public folder copy function
-  buildOutput();
-  copyPublic();
+function runBuildProcess(){
+  const layoutFilesASTArray = createLayoutFileAST();
+  const ASTArrayWithComponentsPrepped = handleComponentTraversal(layoutFilesASTArray)
+  render(ASTArrayWithComponentsPrepped);
+}
 
-  const layout_page_node_maps = readLayoutMap();
+function createLayoutFileAST() {
+  const files = fs.readdirSync(`./${DIRS.source}/${DIRS.templates}/`);
+  const layoutFiles = files.map((file) => {
+    return {
+      fileName: file.replace(".html", ""),
+    };
+  });
 
-  layout_page_node_maps.forEach((e) => {
+  layoutFiles.forEach((file) => {
+    const layoutTags = load_HTML_AST(
+      `./${DIRS.source}/${DIRS.templates}/${file.fileName}.html`
+    ).body.children;
+    file["ids"] = layoutTags
+      .filter((key) => {
+        if (Object.keys(key).includes("attrs")) {
+          return key.attrs.id;
+        }
+      })
+      .map((item) => {
+        return item.attrs.id;
+      });
+  });
+
+  return layoutFiles;
+}
+
+function handleComponentTraversal(layoutFilesASTArray){
+  layoutFilesASTArray.forEach((e) => {
     // fetches AST for the body of each component in that layout page
     e["templateTags"] = e.ids.map((id) => {
       try {
@@ -68,8 +88,7 @@ function createNodeMap() {
       }
     });
   });
-
-  return layout_page_node_maps;
+  return layoutFilesASTArray;
 }
 
 // compiles and populates output folder
@@ -208,44 +227,9 @@ function traverse(nodes) {
   });
 }
 
-// Creates empty output folder
-function buildOutput() {
-  const path = `./${DIRS.output}`;
-  const publicFolder = `./${DIRS.output}/public`;
-  const pluginsFolder = `./${DIRS.output}/public/plugins`;
-  try {
-    fs.accessSync(path, fs.constants.R_OK);
-  } catch (err) {
-    fs.mkdirSync(path);
-    fs.mkdirSync(publicFolder);
-    fs.mkdirSync(pluginsFolder);
-  }
-}
 //traverses layouts folder and formats obj for each layout, inc name and comp ids
 function readLayoutMap() {
-  const files = fs.readdirSync(`./${DIRS.source}/${DIRS.templates}/`);
-  const layoutFiles = files.map((file) => {
-    return {
-      fileName: file.replace(".html", ""),
-    };
-  });
 
-  layoutFiles.forEach((file) => {
-    const layoutTags = load_HTML_AST(
-      `./${DIRS.source}/${DIRS.templates}/${file.fileName}.html`
-    ).body.children;
-    file["ids"] = layoutTags
-      .filter((key) => {
-        if (Object.keys(key).includes("attrs")) {
-          return key.attrs.id;
-        }
-      })
-      .map((item) => {
-        return item.attrs.id;
-      });
-  });
-
-  return layoutFiles;
 }
 
 // returns boilerplate HTML from index.html layout file
@@ -262,15 +246,4 @@ function coreHTML(fileName) {
   const string = HTML.stringify([head]);
 
   return HTML.parse(`<html lang="en">${string}<body></body></html>`);
-}
-
-// Creates copy of public folder and saves to output folder
-function copyPublic() {
-  const src = `./public`;
-  const dest = `./${DIRS.output}/public`;
-  try {
-    fse.copySync(src, dest, { overwrite: true });
-  } catch (err) {
-    console.error(err);
-  }
 }
